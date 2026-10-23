@@ -22,7 +22,7 @@ CORS(app)
 #  ⚙️ CONFIGURATION
 # ════════════════════════════════════════
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8750946166:AAFAYR8urNauJEaNnlBSyWx3rPUSNfcFEyY")
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8750946166:AAGfietODi9pF2ZtjBySK2JT69efLQVjsGs")
 ADMIN_ID = int(os.getenv("TELEGRAM_ADMIN_ID", "1118152695"))
 FIREBASE_URL = os.getenv("FIREBASE_URL", "")  # optionnel si on utilise l'SDK JS côté client
 
