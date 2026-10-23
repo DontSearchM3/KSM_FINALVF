@@ -1,6 +1,6 @@
 """
 ╔════════════════════════════════════════════════════════════════╗
-║        BOT COMMANDES KASSIM — Serveur Flask (Replit)          ║
+║        BOT COMMANDES KASSIM — Serveur Flask (Railway)         ║
 ║                                                                ║
 ║  Reçoit les commandes de la Mini App et envoie un beau        ║
 ║  message récapitulatif via Telegram                           ║
@@ -16,24 +16,30 @@ from datetime import datetime
 import os
 
 app = Flask(__name__)
-CORS(app)  # ✅ Activer CORS pour toutes les requêtes
+CORS(app)
 
 # ════════════════════════════════════════
-#  ⚙️ CONFIGURATION — Depuis variables d'environnement
+#  ⚙️ CONFIGURATION
 # ════════════════════════════════════════
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8750946166:AAFAYR8urNauJEaNnlBSyWx3rPUSNfcFEyY")
 ADMIN_ID = int(os.getenv("TELEGRAM_ADMIN_ID", "1118152695"))
+FIREBASE_URL = os.getenv("FIREBASE_URL", "")  # optionnel si on utilise l'SDK JS côté client
 
-# URL de base pour les API Telegram
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
+
+# Messages de statut envoyés au client
+STATUS_MESSAGES = {
+    "accepted": "✅ Ta commande a été <b>acceptée</b> ! On prépare ta livraison 🔥",
+    "en_route": "🚗 <b>Kassim est en route !</b> Tu seras livré très bientôt, reste dispo 📍",
+    "delivered": "✔️ <b>Commande livrée !</b> Merci pour ta confiance 🙏\nN'hésite pas à laisser un avis ou recommander à tes amis 🤝"
+}
 
 # ════════════════════════════════════════
 #  💾 BASE DE DONNÉES
 # ════════════════════════════════════════
 
 def init_db():
-    """Créer la table SQLite pour sauvegarder les commandes"""
     conn = sqlite3.connect('commandes.db')
     c = conn.cursor()
     c.execute('''
@@ -47,128 +53,199 @@ def init_db():
             snapchat TEXT,
             articles TEXT,
             total REAL,
+            status TEXT DEFAULT 'En attente',
+            tg_user_id TEXT,
+            tg_message_id INTEGER,
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    # Migration: ajouter colonnes manquantes si ancienne DB
+    try:
+        c.execute("ALTER TABLE commandes ADD COLUMN status TEXT DEFAULT 'En attente'")
+    except:
+        pass
+    try:
+        c.execute("ALTER TABLE commandes ADD COLUMN tg_user_id TEXT")
+    except:
+        pass
+    try:
+        c.execute("ALTER TABLE commandes ADD COLUMN tg_message_id INTEGER")
+    except:
+        pass
     conn.commit()
     conn.close()
 
-def sauvegarder_commande(data):
-    """Sauvegarder une commande en base de données"""
+def sauvegarder_commande(data, tg_message_id=None):
     try:
         conn = sqlite3.connect('commandes.db')
         c = conn.cursor()
         c.execute('''
-            INSERT INTO commandes (order_id, nom, tel, adresse, quartier, snapchat, articles, total)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT OR IGNORE INTO commandes
+            (order_id, nom, tel, adresse, quartier, snapchat, articles, total, tg_user_id, tg_message_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
-            data.get('orderId'),
-            data.get('nom'),
-            data.get('tel'),
-            data.get('adresse'),
-            data.get('quartier'),
-            data.get('snapchat'),
-            json.dumps(data.get('articles', [])),
-            data.get('total')
+            data.get('orderId', data.get('order_id')),
+            data.get('name', data.get('nom')),
+            data.get('phone', data.get('tel')),
+            data.get('address', data.get('addr', data.get('adresse'))),
+            data.get('quartier', ''),
+            data.get('snapchat', ''),
+            json.dumps(data.get('items', data.get('articles', []))),
+            data.get('total', 0),
+            str(data.get('userId', data.get('tgUserId', ''))),
+            tg_message_id
         ))
         conn.commit()
         conn.close()
-        print(f"✅ Commande {data.get('orderId')} sauvegardée en base de données")
-    except sqlite3.IntegrityError:
-        print(f"⚠️ Commande {data.get('orderId')} déjà existante")
+        print(f"✅ Commande {data.get('orderId')} sauvegardée")
     except Exception as e:
-        print(f"❌ Erreur lors de la sauvegarde : {e}")
+        print(f"❌ Erreur sauvegarde: {e}")
+
+def get_order_by_id(order_id):
+    conn = sqlite3.connect('commandes.db')
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute('SELECT * FROM commandes WHERE order_id = ?', (order_id,))
+    row = c.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def update_order_status(order_id, status):
+    conn = sqlite3.connect('commandes.db')
+    c = conn.cursor()
+    c.execute('UPDATE commandes SET status = ? WHERE order_id = ?', (status, order_id))
+    conn.commit()
+    conn.close()
 
 # ════════════════════════════════════════
 #  📝 FORMATAGE DES MESSAGES
 # ════════════════════════════════════════
 
-def formater_message_commande(data):
-    """
-    Formater une commande en un beau message Telegram
-    """
-    nom = data.get('nom', '?')
-    tel = data.get('tel', '?')
-    adresse = data.get('adresse', '?')
-    quartier = data.get('quartier', '?')
-    snapchat = data.get('snapchat', 'Non fourni')
-    notes = data.get('notes', '')
-    articles = data.get('articles', [])
+def formater_message_mini_app(data):
+    order_id = data.get('order_id', data.get('orderId', '?'))
+    name = data.get('name', '?')
+    phone = data.get('phone', '?')
+    address = data.get('address', data.get('addr', '?'))
+    items = data.get('items', '')
+    if isinstance(items, list):
+        items = '\n'.join(items)
     total = data.get('total', 0)
-    order_id = data.get('orderId', '?')
+    note = data.get('note', '')
+    time_slot = data.get('time', 'Dès que possible')
+    wheel = data.get('wheel', '')
+    referral = data.get('referralCode', '')
     timestamp = datetime.now().strftime('%d/%m/%Y à %H:%M')
 
-    # Construire la liste des articles
-    articles_text = ""
-    for idx, article in enumerate(articles, 1):
-        variante = article.get('variante', 'N/A')
-        prix_unitaire = article.get('prix', 0)
-        qte = article.get('qte', 0)
-        montant = article.get('total', 0)
-
-        articles_text += f"  {idx}. {article.get('nom')} ({variante})\n"
-        articles_text += f"     {prix_unitaire} CHF × {qte} = <b>{montant:.2f} CHF</b>\n"
-
-    # Construire le message final
-    message = f"""<b>🎉 NOUVELLE COMMANDE !</b>
+    msg = f"""🔥 <b>NOUVELLE COMMANDE</b>
 <code>━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code>
 
-<b>👤 CLIENT</b>
-  Nom: <b>{nom}</b>
-  Tél: <b>{tel}</b>
-  Snapchat: <b>{snapchat}</b>
+👤 <b>CLIENT</b>
+  Nom: <b>{name}</b>
+  Tél: <code>{phone}</code>
 
-<b>📍 LIVRAISON</b>
-  Adresse: <b>{adresse}</b>
-  Quartier: <b>{quartier}</b>
-{f'  📝 Notes: {notes}' if notes else ''}
+📍 <b>LIVRAISON</b>
+  Adresse: <b>{address}</b>
+  Créneau: <b>{time_slot}</b>
+{f'  📝 Note: {note}' if note else ''}
 
-<b>🛒 ARTICLES</b>
-{articles_text}
-<code>━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code>
-
-<b>💰 RÉSUMÉ</b>
-  Sous-total: <b>{total:.2f} CHF</b>
-  Livraison: <b>OFFERTE 🎁</b>
-  <b>TOTAL: {total:.2f} CHF</b>
-
-💵 Paiement: <b>Espèces à la livraison</b>
+🛒 <b>ARTICLES</b>
+{items}
 
 <code>━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code>
+💰 <b>TOTAL: {total} CHF</b>  (livraison offerte 🎁)
+{f'🎡 Roue: {wheel}' if wheel else ''}
+{f'🤝 Parrainage: {referral}' if referral else ''}
 
-📌 N° Commande: <code>{order_id}</code>
-⏰ {timestamp}
-"""
+📌 N°: <code>{order_id}</code>
+⏰ {timestamp}"""
+    return msg
 
-    return message
+def build_order_keyboard(order_id):
+    """Boutons inline Telegram pour gérer le statut d'une commande"""
+    return {
+        "inline_keyboard": [[
+            {"text": "✅ Accepter", "callback_data": f"status:{order_id}:accepted"},
+            {"text": "🚗 En route", "callback_data": f"status:{order_id}:en_route"},
+            {"text": "✔️ Livré",    "callback_data": f"status:{order_id}:delivered"}
+        ]]
+    }
 
 # ════════════════════════════════════════
 #  📨 ENVOI DE MESSAGES
 # ════════════════════════════════════════
 
-def envoyer_message_telegram(chat_id, message):
-    """
-    Envoyer un message via Telegram Bot API
-    """
+def envoyer_message_telegram(chat_id, message, reply_markup=None):
     url = f"{TELEGRAM_API_URL}/sendMessage"
-
     payload = {
         'chat_id': chat_id,
         'text': message,
         'parse_mode': 'HTML'
     }
-
+    if reply_markup:
+        payload['reply_markup'] = json.dumps(reply_markup)
     try:
-        response = requests.post(url, json=payload, timeout=10)
-        if response.status_code == 200:
-            print(f"✅ Message envoyé au chat {chat_id}")
-            return True
+        resp = requests.post(url, json=payload, timeout=10)
+        data = resp.json()
+        if resp.status_code == 200 and data.get('ok'):
+            msg_id = data.get('result', {}).get('message_id')
+            print(f"✅ Message envoyé au chat {chat_id} (msg_id={msg_id})")
+            return msg_id
         else:
-            print(f"❌ Erreur Telegram: {response.status_code} - {response.text}")
-            return False
+            print(f"❌ Erreur Telegram: {resp.status_code} - {resp.text}")
+            return None
     except Exception as e:
-        print(f"❌ Erreur lors de l'envoi: {e}")
-        return False
+        print(f"❌ Erreur envoi: {e}")
+        return None
+
+def edit_message_keyboard(chat_id, message_id, new_text, new_keyboard=None):
+    """Modifier un message existant (pour mettre à jour le statut)"""
+    url = f"{TELEGRAM_API_URL}/editMessageText"
+    payload = {
+        'chat_id': chat_id,
+        'message_id': message_id,
+        'text': new_text,
+        'parse_mode': 'HTML'
+    }
+    if new_keyboard:
+        payload['reply_markup'] = json.dumps(new_keyboard)
+    try:
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        print(f"⚠️ edit_message error: {e}")
+
+def answer_callback_query(callback_query_id, text=""):
+    """Répondre à un callback query (enlève le loader sur le bouton)"""
+    url = f"{TELEGRAM_API_URL}/answerCallbackQuery"
+    try:
+        requests.post(url, json={
+            'callback_query_id': callback_query_id,
+            'text': text,
+            'show_alert': False
+        }, timeout=5)
+    except:
+        pass
+
+def broadcast_to_all_clients(message_text):
+    """Récupère tous les tg_user_id distincts et envoie le message"""
+    conn = sqlite3.connect('commandes.db')
+    c = conn.cursor()
+    c.execute("SELECT DISTINCT tg_user_id FROM commandes WHERE tg_user_id IS NOT NULL AND tg_user_id != '' AND tg_user_id != 'browser'")
+    rows = c.fetchall()
+    conn.close()
+    sent = 0
+    failed = 0
+    for row in rows:
+        uid = row[0]
+        try:
+            uid_int = int(uid)
+            result = envoyer_message_telegram(uid_int, message_text)
+            if result:
+                sent += 1
+            else:
+                failed += 1
+        except:
+            failed += 1
+    return sent, failed
 
 # ════════════════════════════════════════
 #  🌐 ROUTES
@@ -176,44 +253,89 @@ def envoyer_message_telegram(chat_id, message):
 
 @app.route('/', methods=['GET'])
 def home():
-    """Page d'accueil"""
     return jsonify({
         'status': '✅ Serveur Kassim actif',
-        'version': '1.0',
-        'message': 'Webhook Telegram configuré et prêt à recevoir les commandes'
+        'version': '2.0',
+        'features': ['commandes', 'chat', 'statuts', 'broadcast']
     })
 
 @app.route('/webhook/telegram', methods=['POST'])
 def webhook_telegram():
     """
-    Endpoint Telegram WebApp
-    Reçoit les données de commande depuis la Mini App
+    Endpoint double usage :
+    - Reçoit les update Telegram (callback_query pour les boutons statuts)
+    - Reçoit les commandes depuis la Mini App
     """
     try:
-        # Récupérer les données JSON
         data = request.get_json()
-
         if not data:
-            return jsonify({'error': 'Pas de données reçues'}), 400
+            return jsonify({'error': 'Pas de données'}), 400
 
-        print(f"\n📥 Nouvelle commande reçue: {data.get('orderId')}")
-        print(f"   Client: {data.get('nom')}")
-        print(f"   Total: {data.get('total')} CHF")
+        # ── Callback query (boutons inline statuts) ──
+        if 'callback_query' in data:
+            cq = data['callback_query']
+            cq_id = cq['id']
+            cq_data = cq.get('data', '')
+            msg = cq.get('message', {})
+            chat_id = msg.get('chat', {}).get('id')
+            message_id = msg.get('message_id')
 
-        # Sauvegarder en base de données
-        sauvegarder_commande(data)
+            if cq_data.startswith('status:'):
+                parts = cq_data.split(':')
+                if len(parts) == 3:
+                    _, order_id, new_status = parts
+                    order = get_order_by_id(order_id)
+
+                    status_labels = {
+                        'accepted': '✅ Acceptée',
+                        'en_route': '🚗 En route',
+                        'delivered': '✔️ Livrée'
+                    }
+                    label = status_labels.get(new_status, new_status)
+
+                    # Update DB locale
+                    update_order_status(order_id, label)
+                    answer_callback_query(cq_id, f"{label} !")
+
+                    # Modifier le message Telegram (remplace les boutons par le statut)
+                    original_text = msg.get('text', '')
+                    new_text = original_text + f"\n\n<b>Statut: {label}</b>"
+                    # Garder les boutons sauf si livré
+                    new_kb = None if new_status == 'delivered' else build_order_keyboard(order_id)
+                    edit_message_keyboard(chat_id, message_id, new_text, new_kb)
+
+                    # Notifier le client si on a son TG ID
+                    if order and order.get('tg_user_id'):
+                        try:
+                            tg_uid = int(order['tg_user_id'])
+                            client_msg = STATUS_MESSAGES.get(new_status, f"Statut: {label}")
+                            envoyer_message_telegram(tg_uid, client_msg)
+                        except Exception as e:
+                            print(f"⚠️ Impossible de notifier le client: {e}")
+
+                    # TODO: mettre à jour Firestore via Firebase Admin SDK
+                    # Pour l'instant la mini app lit le statut depuis Firestore
+                    # Le webhook reçoit la commande avec l'orderId → on peut appeler l'API REST Firebase
+
+                    return jsonify({'ok': True}), 200
+
+            return jsonify({'ok': True}), 200
+
+        # ── Commande depuis la Mini App ──
+        print(f"\n📥 Nouvelle commande: {data.get('orderId')}")
 
         # Formater le message
-        message = formater_message_commande(data)
+        message = formater_message_mini_app(data)
+        keyboard = build_order_keyboard(data.get('orderId', data.get('order_id', '?')))
 
-        # Envoyer au créateur (admin)
-        if ADMIN_ID == 0:
-            print("⚠️  ADMIN_ID non configuré - message non envoyé")
-            print("   Configure ton ID Telegram dans le code pour recevoir les notifications")
-        else:
-            envoyer_message_telegram(ADMIN_ID, message)
+        # Envoyer à l'admin avec les boutons
+        msg_id = None
+        if ADMIN_ID:
+            msg_id = envoyer_message_telegram(ADMIN_ID, message, reply_markup=keyboard)
 
-        # Répondre à la Mini App
+        # Sauvegarder avec le message_id pour pouvoir éditer plus tard
+        sauvegarder_commande(data, tg_message_id=msg_id)
+
         return jsonify({
             'success': True,
             'orderId': data.get('orderId'),
@@ -224,12 +346,86 @@ def webhook_telegram():
         print(f"❌ Erreur webhook: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/chat', methods=['POST'])
+def chat_from_client():
+    """Relaie un message client vers le DM Telegram de Kassim"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'Pas de données'}), 400
+
+        user_id = data.get('userId', 'inconnu')
+        name = data.get('name', 'Client')
+        text = data.get('text', '')
+
+        msg = f"💬 <b>Message de {name}</b>\n"
+        msg += f"<code>ID: {user_id}</code>\n\n"
+        msg += f"{text}\n\n"
+        msg += f"<i>Réponds via l'admin panel du mini app</i>"
+
+        envoyer_message_telegram(ADMIN_ID, msg)
+        return jsonify({'success': True}), 200
+    except Exception as e:
+        print(f"❌ Erreur chat: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/chat/reply', methods=['POST'])
+def chat_reply_to_client():
+    """Notifie le client Telegram quand Kassim répond depuis l'admin panel"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'Pas de données'}), 400
+
+        tg_user_id = data.get('tgUserId')
+        text = data.get('text', '')
+
+        if tg_user_id:
+            try:
+                msg = f"💬 <b>Kassim_gka</b>\n{text}"
+                envoyer_message_telegram(int(tg_user_id), msg)
+            except Exception as e:
+                print(f"⚠️ Impossible de notifier: {e}")
+
+        return jsonify({'success': True}), 200
+    except Exception as e:
+        print(f"❌ Erreur chat reply: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/broadcast', methods=['POST'])
+def broadcast():
+    """
+    Envoyer un message à tous les clients depuis l'admin panel
+    Body: { "text": "...", "adminSecret": "kassim2024" }
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'Pas de données'}), 400
+
+        # Vérification simple
+        secret = data.get('adminSecret', '')
+        admin_secret = os.getenv('ADMIN_SECRET', 'kassim2024')
+        if secret != admin_secret:
+            return jsonify({'error': 'Non autorisé'}), 403
+
+        text = data.get('text', '').strip()
+        if not text:
+            return jsonify({'error': 'Message vide'}), 400
+
+        # Ajouter un header promo
+        full_msg = f"🔥 <b>Message de Kassim_gka</b>\n\n{text}"
+
+        sent, failed = broadcast_to_all_clients(full_msg)
+        print(f"📢 Broadcast: {sent} envoyés, {failed} échecs")
+
+        return jsonify({'success': True, 'sent': sent, 'failed': failed}), 200
+    except Exception as e:
+        print(f"❌ Erreur broadcast: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/commandes', methods=['GET'])
 def lister_commandes():
-    """
-    Endpoint pour lister toutes les commandes sauvegardées
-    Utile pour vérifier que tout fonctionne
-    """
     try:
         conn = sqlite3.connect('commandes.db')
         conn.row_factory = sqlite3.Row
@@ -237,12 +433,7 @@ def lister_commandes():
         c.execute('SELECT * FROM commandes ORDER BY timestamp DESC LIMIT 50')
         rows = c.fetchall()
         conn.close()
-
-        commandes = [dict(row) for row in rows]
-        return jsonify({
-            'total': len(commandes),
-            'commandes': commandes
-        }), 200
+        return jsonify({'total': len(rows), 'commandes': [dict(r) for r in rows]}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -252,33 +443,17 @@ def lister_commandes():
 
 if __name__ == '__main__':
     print("\n" + "="*50)
-    print("🚀 Démarrage du serveur Kassim")
+    print("🚀 Démarrage du serveur Kassim v2.0")
     print("="*50)
-
-    # Initialiser la base de données
     init_db()
     print("✅ Base de données initialisée")
-
-    # Afficher les infos importantes
-    print(f"\n⚙️  Configuration:")
-    if ADMIN_ID == 0:
-        print(f"   ⚠️  ADMIN_ID = 0 (À configurer!)")
-    else:
-        print(f"   ✅ ADMIN_ID = {ADMIN_ID}")
-    print(f"   ✅ BOT_TOKEN configuré")
-
-    print(f"\n📡 Endpoint webhook:")
-    print(f"   POST /webhook/telegram")
-
-    print(f"\n📊 Endpoints disponibles:")
-    print(f"   GET  / — État du serveur")
-    print(f"   GET  /commandes — Lister les commandes")
-    print(f"   POST /webhook/telegram — Recevoir une commande")
-
-    print("\n" + "="*50)
-    print("✅ Serveur prêt ! En attente de commandes...")
-    print("="*50 + "\n")
-
-    # Lancer le serveur
-    port = int(os.getenv('PORT', 3000))  # ✅ Railway assigne le port dynamiquement
+    print(f"✅ ADMIN_ID = {ADMIN_ID}")
+    print(f"\n📡 Routes:")
+    print("   POST /webhook/telegram — Commandes + callbacks statuts")
+    print("   POST /chat             — Message client → TG admin")
+    print("   POST /chat/reply       — Réponse admin → TG client")
+    print("   POST /broadcast        — Message à tous les clients")
+    print("   GET  /commandes        — Lister les commandes")
+    print("\n" + "="*50 + "\n")
+    port = int(os.getenv('PORT', 3000))
     app.run(host='0.0.0.0', port=port, debug=False)
