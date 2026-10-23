@@ -133,8 +133,6 @@ def formater_message_mini_app(data):
     username = data.get('client_username', '') or '—'
     address = data.get('address', data.get('addr', '')) or '—'
     maps_url = data.get('maps_url', '')
-    maps_line = f'\n📍 <a href="{maps_url}">{address}</a>' if maps_url else f'\n📍 {address}'
-
     return f"""🎉 NOUVELLE COMMANDE !
 
 💬 {username}  |  🆔 {tg_id}
