@@ -126,6 +126,7 @@ def formater_message_mini_app(data):
     name = data.get('name', '?')
     phone = data.get('phone', '?')
     address = data.get('address', data.get('addr', '?'))
+    maps_url = data.get('maps_url', '')
     items = data.get('items', '')
     if isinstance(items, list):
         items = '\n'.join(items)
@@ -136,6 +137,8 @@ def formater_message_mini_app(data):
     referral = data.get('referralCode', '')
     timestamp = datetime.now().strftime('%d/%m/%Y à %H:%M')
 
+    maps_line = f'\n  🗺 <a href="{maps_url}">Ouvrir dans Maps →</a>' if maps_url else ''
+
     msg = f"""🔥 <b>NOUVELLE COMMANDE</b>
 <code>━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code>
 
@@ -144,7 +147,7 @@ def formater_message_mini_app(data):
   Tél: <code>{phone}</code>
 
 📍 <b>LIVRAISON</b>
-  Adresse: <b>{address}</b>
+  Adresse: <b>{address}</b>{maps_line}
   Créneau: <b>{time_slot}</b>
 {f'  📝 Note: {note}' if note else ''}
 
