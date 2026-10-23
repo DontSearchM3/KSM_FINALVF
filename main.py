@@ -122,46 +122,26 @@ def update_order_status(order_id, status):
 # ════════════════════════════════════════
 
 def formater_message_mini_app(data):
-    order_id = data.get('order_id', data.get('orderId', '?'))
-    name = data.get('name', '?')
-    phone = data.get('phone', '?')
-    address = data.get('address', data.get('addr', '?'))
-    maps_url = data.get('maps_url', '')
-    items = data.get('items', '')
+    total = data.get('total', '?')
+    items = data.get('items', [])
     if isinstance(items, list):
-        items = '\n'.join(items)
-    total = data.get('total', 0)
-    note = data.get('note', '')
-    time_slot = data.get('time', 'Dès que possible')
-    wheel = data.get('wheel', '')
-    referral = data.get('referralCode', '')
-    timestamp = datetime.now().strftime('%d/%m/%Y à %H:%M')
+        items_str = '\n'.join(f"  • {i}" for i in items) if items else '  —'
+    else:
+        items_str = f"  {items}" if items else '  —'
+    time_slot = data.get('time', '') or 'Dès que possible'
+    tg_id = data.get('client_tg_id', '') or '—'
+    username = data.get('client_username', '') or '—'
+    address = data.get('address', data.get('addr', '')) or '—'
+    maps_url = data.get('maps_url', '')
+    maps_line = f'\n📍 <a href="{maps_url}">{address}</a>' if maps_url else f'\n📍 {address}'
 
-    maps_line = f'\n  🗺 <a href="{maps_url}">Ouvrir dans Maps →</a>' if maps_url else ''
+    return f"""🎉 NOUVELLE COMMANDE !
 
-    msg = f"""🔥 <b>NOUVELLE COMMANDE</b>
-<code>━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code>
-
-👤 <b>CLIENT</b>
-  Nom: <b>{name}</b>
-  Tél: <code>{phone}</code>
-
-📍 <b>LIVRAISON</b>
-  Adresse: <b>{address}</b>{maps_line}
-  Créneau: <b>{time_slot}</b>
-{f'  📝 Note: {note}' if note else ''}
-
-🛒 <b>ARTICLES</b>
-{items}
-
-<code>━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code>
-💰 <b>TOTAL: {total} CHF</b>  (livraison offerte 🎁)
-{f'🎡 Roue: {wheel}' if wheel else ''}
-{f'🤝 Parrainage: {referral}' if referral else ''}
-
-📌 N°: <code>{order_id}</code>
-⏰ {timestamp}"""
-    return msg
+💬 {username}  |  🆔 {tg_id}
+🛒 {items_str}
+💰 {total} CHF
+📍 {address}{f' — <a href="{maps_url}">Maps</a>' if maps_url else ''}
+⏰ {time_slot}"""
 
 def build_order_keyboard(order_id):
     """Boutons inline Telegram pour gérer le statut d'une commande"""
