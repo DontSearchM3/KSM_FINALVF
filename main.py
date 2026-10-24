@@ -248,7 +248,13 @@ def webhook_telegram():
     - Reçoit les commandes depuis la Mini App
     """
     try:
-        data = request.get_json()
+        # Accepte JSON et text/plain (sendBeacon envoie parfois text/plain)
+        data = request.get_json(force=True, silent=True)
+        if not data:
+            try:
+                data = json.loads(request.data.decode('utf-8'))
+            except Exception:
+                data = None
         if not data:
             return jsonify({'error': 'Pas de données'}), 400
 
@@ -403,6 +409,33 @@ def broadcast():
         return jsonify({'success': True, 'sent': sent, 'failed': failed}), 200
     except Exception as e:
         print(f"❌ Erreur broadcast: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/webhook/notify', methods=['POST'])
+def webhook_notify():
+    """Notifie un client Telegram du changement de statut de sa commande"""
+    try:
+        data = request.get_json(force=True, silent=True)
+        if not data:
+            return jsonify({'error': 'Pas de données'}), 400
+
+        tg_user_id = data.get('tgUserId') or data.get('client_tg_id')
+        text = data.get('text', '')
+        order_label = data.get('orderLabel', '')
+
+        if tg_user_id and text:
+            try:
+                full_msg = f"{text}"
+                if order_label:
+                    full_msg += f"\n🧾 Commande #{order_label}"
+                envoyer_message_telegram(int(tg_user_id), full_msg)
+                print(f"✅ Notif client {tg_user_id}: {text[:50]}")
+            except Exception as e:
+                print(f"⚠️ Erreur notif client: {e}")
+
+        return jsonify({'success': True}), 200
+    except Exception as e:
+        print(f"❌ Erreur notify: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/commandes', methods=['GET'])
